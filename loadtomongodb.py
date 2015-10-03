@@ -48,4 +48,3 @@ if __name__ == '__main__':
 #python代码最顶端需要加上 # -*- coding:utf-8 -*- 声明该源文件的中文编码方式
 #中文的那个字符串需要加上 .decode("GBK") 以GBK编码对字符串str进行解码，以获取unicode 就可以了
 #more:http://blog.csdn.net/moodytong/article/details/8136258
- FundaInfo.update({"stockid":stockid,"quarter":quarter} ,{$set:{col:dataSet[col]}})
