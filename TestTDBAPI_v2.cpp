@@ -97,8 +97,8 @@ int main(int argc, char* argv[])
 	//Volatility(hTdb, strCode, volatility);
 	int groupNumber=7;
 	int numQuater=7;
-	string factorName="MOM6";
-	char factorType='D';
+	string factorName="SM";
+	char factorType='S';
 	vector<double> profit(groupNumber,0.0);
 	vector<vector<string>>TmpstockList;
 	vector<vector<string>>rankStockList;
@@ -106,9 +106,9 @@ int main(int argc, char* argv[])
 	getTestDate(testStartDate); //初始化时间数组
 	vector <vector<bool>> MarketVSGroup(numQuater,vector<bool>(groupNumber,false));   //7个季度，每个分组增速是否跑赢大盘
 	//-------------计算动态因子-------------------------------------
-	//以下只需要计算一次
-	getData("PE",TmpstockList,'S');
-	DynamicData(hTdb,factorName,testStartDate,TmpstockList[0],rankStockList); //根据动量因子获取股票列表
+	//以下只需要计算一次 
+	//getData("PE",TmpstockList,'S');
+	//DynamicData(hTdb,factorName,testStartDate,TmpstockList[0],rankStockList); //根据动量因子获取股票列表
 	//以上只需要计算一次
 	vector<vector<string>>stockList;
 	getData(factorName,stockList,factorType);
