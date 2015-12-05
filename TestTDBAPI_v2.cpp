@@ -12,11 +12,14 @@
 #endif
 
 #include "TDBAPI.h"
+#include <sstream>
 #include <vector>
+#include <utility>
 #include <assert.h>
 #include <string>
 #include <time.h>
 #include <fstream>
+#include <direct.h>
 using namespace std;
 #define ELEMENT_COUNT(arr) (sizeof(arr)/sizeof(arr[0]))
 
@@ -48,105 +51,230 @@ void GetOrder(THANDLE hTdb, const std::string& strCode, int nStartDay, int nEndD
 void GetOrderQueue(THANDLE hTdb, const std::string& strCode, int nStartDay, int nEndDay, int nStartTime=0, int nEndTime=0);
 void TestFormula(THANDLE hTdb);
 
-void Momentum(THANDLE hTdb, const std::string& strCode, int momCyc, int& monentum);
+void DynamicData(THANDLE hTdb,const string factor, vector<int> testStartDate,vector<string> stockList,vector<vector<string>>& rankStockList);
 void Oscillator(THANDLE hTdb, const std::string& strCode,int momCyc, double& oscillator);
 void Volatility(THANDLE hTdb, const std::string& strCode, double& volatility);
+bool getOneMomentum(THANDLE hTdb,const string strCode,int startDate,int endDate,double& mom);//计算动量
 
 void LoadIPFromCin(OPEN_SETTINGS&);
 
 int getLastTradeDate(THANDLE hTdb,const std::string& strCode);
-double getOneProfit(THANDLE hTdb,string startTime,string endTime,string stockid);
-void getData(string factor,vector<vector<string>>& stockList);
-void getTestDate(vector<string>& testStartDate);
-void computeProfit(vector<vector<string>>stockList,vector<double> profit);
+int getStarDatetFromInterval(int startDate,int interval);
+
+bool getOneProfit(THANDLE hTdb,int startTime,int endTime,const string& stockid,double& oneProfit,double& baseProfit);
+void getData(string factor,vector<vector<string>>& stockList,char factorType);
+void getTestDate(vector<int>& testStartDate);
+void computeProfit(THANDLE hTdb,vector<int> time,vector<vector<string>>stockList,vector <vector<bool>>& MarketVSGroup,int numQuater,int groupNumber,vector<double>& profit);
+
 int main(int argc, char* argv[])
 {   
 	OPEN_SETTINGS settings={"127.0.0.1","10222","user","pwd",30,2,0}; // 登录时的信息,并赋予初值
 	LoadIPFromCin(settings); // 输入登录信息
 	TDBDefine_ResLogin loginAnswer={0}; 
-	/*
+	
 	THANDLE hTdb = TDB_Open(&settings, &loginAnswer);
 	if (!hTdb)
 	{ 
 		Print("TDB_Open failed:%s, program exit!\n", loginAnswer.szInfo);
 		exit(0);
 	}
+	/*
+	double shProfit=0.0;
+	getOneProfit(hTdb,20140601,20140901,"399001.sz",shProfit);
+	cout<<shProfit<<endl;
+	system("pause");
+	return 0;
 	*/
-	string strCode="601857.sh";
-	int monentum=0;
+	//string strCode="000820.sz";
+	//string strCode="601857.sh";
+	//GetK(hTdb, strCode, CYC_DAY, 1, REFILL_NONE, 0, 20140601, 20140901);
+	
 	double oscillator=0.0;
 	double volatility=0.0;
+	//string strCode="601857.sh";
 	//Momentum(hTdb,strCode,12,monentum);
 	//Oscillator(hTdb, strCode,1, oscillator);
 	//Volatility(hTdb, strCode, volatility);
-	
-	vector<double> profit;
+	int groupNumber=7;
+	int numQuater=7;
+	string factorName="SM";
+	char factorType='S';
+	vector<double> profit(groupNumber,0.0);
+	vector<vector<string>>TmpstockList;
+	vector<vector<string>>rankStockList;
+	vector<int> testStartDate; 
+	getTestDate(testStartDate); //初始化时间数组
+	vector <vector<bool>> MarketVSGroup(numQuater,vector<bool>(groupNumber,false));   //7个季度，每个分组增速是否跑赢大盘
+	//-------------计算动态因子-------------------------------------
+	//以下只需要计算一次 
+	//getData("PE",TmpstockList,'S');
+	//DynamicData(hTdb,factorName,testStartDate,TmpstockList[0],rankStockList); //根据动量因子获取股票列表
+	//以上只需要计算一次
 	vector<vector<string>>stockList;
-	string factor="EPS";
-	vector<string> testStartDate; 
-	getTestDate(testStartDate);
-	getData(factor,stockList);
-	//computeProfit(hTdb,stocklist,profit);
+	getData(factorName,stockList,factorType);
+	
+	computeProfit(hTdb,testStartDate,stockList,MarketVSGroup,numQuater,groupNumber,profit);
+
+	for(int i=0;i<groupNumber;i++){
+		cout<<"第"<<i<<"组的盈利额为"<<profit[i];
+		int number=0;
+		for(int j=0;j<numQuater;j++){
+		     if(MarketVSGroup[j][i]==1) number++;
+		}
+		cout<<" 跑赢市场的概率为："<<number*1.0/numQuater<<endl;
+	}
+	
+	system("pause");
+	
 	return 0;
 
 }
 
 //input:每个季度的根据因子排好序的stockList 7*2000 的数组
 //time:8个季度开始的时间，包含第0个季度的开始时间
+//groupNumber：分组的数目
 //output:每一个分组的利润和
-void computeProfit(THANDLE hTdb,vector<string> time,vector<vector<string>>stockList,vector<double> profit){
-    vector<vector<double>>nums; //nums[季度][分组号]=某季度某分组的盈利和
+//over
+double szProfitRate=0.0;
+int pec=0;
+void computeProfit(THANDLE hTdb,vector<int> time,vector<vector<string>>stockList,vector <vector<bool>>& MarketVSGroup,int numQuater,int groupNumber,vector<double>& profit){
+    vector<vector<double>>nums(numQuater,vector<double>(groupNumber,0.0)); //nums[季度][分组号]=某季度某分组的盈利和
+	vector<vector<double>>numsRate(numQuater,vector<double>(groupNumber,0.0)); //numsRate[季度][分组号]=某季度某分组的收益率
+	vector<double> marketTndexProfit(numQuater,0.0); //大盘的每个季度收益率
 	
-	for(int i=0;i<7;i++){
+	for(int i=0;i<numQuater;i++){
+		cout<<"第"<<i<<"季度正在计算"<<endl;
+		cout<<stockList[i].size()<<endl;
+		
+		int startTime=time[i+1];
+		int endTime=time[i];
+		double szProfit=0.0;
+		double szBaseProfit=0.0;
+		//double szProfitRate=0.0;
+		//getOneProfit(hTdb,startTime,endTime,"999999.sh",shProfit);//计算上证股市大盘该季度的盈利状况
+		getOneProfit(hTdb,startTime,endTime,"399001.sz",szProfit,szBaseProfit);//计算深证股市大盘该季度的盈利状况
+		szProfitRate=szProfit/szBaseProfit;
+		//cout<<"上证综指"<<shProfit<<endl;
+		cout<<"深证成指"<<szProfitRate<<endl;
+		/*
+		double baseProfit=0.0,oneProfit=0.0;
+		for(int k=0;k<stockList[i].size();k++)
+		     getOneProfit(hTdb,startTime,endTime,stockList[i][k],oneProfit,baseProfit);
+		*/
+		
+		marketTndexProfit[i]=szProfitRate;
         int start=0;
-		string startTime=time[i+1];
-		string endTime=time[i];
-		for(int j=0;j<5;j++){
-           for(int k=start;k<start+400;k++){
-		         nums[i][j]+=getOneProfit(hTdb,startTime,endTime,stockList[i][k]);
-		   }
-		   start+=400;
+		int k=0; //每个分组的开始位置
+		for(int j=0;j<groupNumber;j++){
+			   
+			   int number=0;        
+			   double baseProfit=0.0;  //每组的开始总资金
+			   for(k=start;number<20 && k<stockList[i].size();k++){  //获取10只股票为1组
+						 double oneProfit=0.0;  //单只股票的盈利
+						 
+						 if(getOneProfit(hTdb,startTime,endTime,stockList[i][k],oneProfit,baseProfit)){
+							 nums[i][j]+=oneProfit;
+							 number++;
+						 }
+			   }
+			   cout<<i<<"季度"<<j<<"分组的股票数:"<<number<<" ";
+			   start=k+100;     //每一个分组间隔100，确保各个分组的因子值差异比较大
+			   cout<<nums[i][j]<<" / "<<baseProfit<<endl;     //分组的盈利/投资额
+			   numsRate[i][j] = nums[i][j]/baseProfit; //该分组的年化收益率
+			   cout<<numsRate[i][j]<<endl;
 		}
+		
+		cout<<double(pec)/(20*groupNumber)<<endl;//计算单只股票跑赢市场的概率
+		szProfitRate=0.0;
+		pec=0;
+		
 	}
+	cout<<"开始计算各个分组的盈利能力"<<endl;
 
-	for(int i=0;i<7;i++){
-		for(int j=0;j<5;j++){
+	for(int i=0;i<numQuater;i++){
+		for(int j=0;j<groupNumber;j++){
 		     profit[j]+=nums[i][j];
+			 if(numsRate[i][j]>marketTndexProfit[i])
+				 MarketVSGroup[i][j]=true;
+			 cout<<"季度："<<i<<"分组:"<<j<<"跑赢了市场："<<MarketVSGroup[i][j]<<endl;
 		}
 	}
 }
 
-
-double getOneProfit(THANDLE hTdb,string startTime,string endTime,string stockid){
-	return 0.0;
+//jop:将单支股票在 一段时间段内的盈利多少计算出来
+//输入：时间段开始时间 时间段结束时间 股票代码
+//输出：盈利额 如果TDB中不存在该股票信息则返回false
+//over
+bool getOneProfit(THANDLE hTdb,int startTime,int endTime,const string& stockid,double& oneProfit,double& baseProfit){
+	TDBDefine_ReqKLine reqK = {"", REFILL_NONE, 0, 0, CYC_DAY, 1, 1, startTime, endTime, 0, 0};
+	strncpy(reqK.chCode, stockid.c_str(), sizeof(reqK.chCode));
+	TDBDefine_KLine* pKLine = NULL;
+	int nCount =0;
+	int nRet = TDB_GetKLine(hTdb, &reqK, &pKLine, &nCount);
+	if(nCount==0){
+		//cout<<"未查询到该股票"<<stockid<<endl;
+		return false;
+	}
+	//cout<<"查询到该股票"<<stockid<<endl;
+	TDBDefine_KLine& buyTDB = *(pKLine); 
+	TDBDefine_KLine& saleTDB = *(pKLine + nCount-1);
+	oneProfit=(saleTDB.nClose-buyTDB.nOpen)*1.0/10000;
+	double rate=oneProfit*10000/buyTDB.nOpen;
+	if(rate > szProfitRate)
+		pec++;
+	baseProfit+=buyTDB.nOpen/10000;
+	TDB_Free(pKLine);
+	return true;
 }
 
 //jop: 将csv文件数据导入，将股票代码格式转化为TDB格式
-//输入：因子类型
+//输入：因子名称 factor,因子类型 S：static D:dynamic
 //输出：股票列表 7*2000的数组 按照因子值排好序的stockid
-void getData(string factor,vector<vector<string>>& stockList){
+//over
+void getData(string factor,vector<vector<string>>& stockList,char factorType){
     ifstream ifs;
-	for(int i=0;i<7;i++){
+	istringstream line_stream;
+	for(int i=1;i<=7;i++){
+	   vector<string> subStockList;
 	   ifs.open(factor+"/"+to_string(long long (i))+".csv");
-	   string data;
-	   while(getline(ifs,data)){
-	       cout<<data<<endl;
+	   string stockid;
+	   string line;
+	   int j=0;
+	   while(getline(ifs,line,'\n')){
+           //cout << line << endl;
+           line_stream.str(line); // set the input stream to line
+           getline(line_stream, stockid, ','); // reads from line_stream and writes to stockid
+		   //将stockid转化为TDB的格式
+		    string TDBstockid=stockid;
+
+           if(factorType=='S'){  //如果为静态类型则需要将股票代码转化为TDB的股票代码类型  下次再python中修改股票类型
+		       string type=stockid.substr(0,2);
+		       if(type=="sh")  //只取深圳股市股票数据
+			        continue;
+		       TDBstockid=stockid.substr(2,6)+'.'+type;
+		   }
+
+		   subStockList.push_back(TDBstockid);
 	   }
+	   stockList.push_back(subStockList);
+	   ifs.close();    //记得关闭文件，否则无法读入下一个文件
 	}
+	for(int i=0;i<stockList.size();i++)
+		cout<<"第"<<i+1<<"季度"<<stockList[i].size()<<endl;
 }
 
 //jop:获取测试集每个季度的开始时间，注意日期必须为交易日
 //输入：
 //输出：一个一维vector 存储第 i 个季度的开始日期
-void getTestDate(vector<string>& testStartDate){
-	testStartDate.push_back("20140901");    //0季度
-	testStartDate.push_back("20140603");    //1季度
-	testStartDate.push_back("20140303");
-	testStartDate.push_back("20140102");
-	testStartDate.push_back("20130902");
-	testStartDate.push_back("20130603");
-	testStartDate.push_back("20130301");
-	testStartDate.push_back("20130104");
+void getTestDate(vector<int>& testStartDate){
+	testStartDate.push_back(20140901);    //0季度
+	testStartDate.push_back(20140601);    //1季度
+	testStartDate.push_back(20140301);
+	testStartDate.push_back(20140101);
+	testStartDate.push_back(20130901);
+	testStartDate.push_back(20130601);
+	testStartDate.push_back(20130301);
+	testStartDate.push_back(20130101);
 
 }
 //获得一个完整交易日的日期
@@ -171,6 +299,22 @@ int getLastTradeDate(THANDLE hTdb,const std::string& strCode){
 	int ResDate=tdbK.nDate;
 	TDB_Free(pKLine);
 	return ResDate;
+}
+
+//根据结束时间，时间间隔，计算开始时间
+//输入：结束时间，时间间隔(月)
+//输出：开始时间
+int getStarDatetFromInterval(int endDate,int interval){
+	int month=endDate%10000/100;
+	int day=endDate%100;
+	if(month>interval)
+		return endDate-interval*100;
+	else{
+	    interval-=month;
+		int year=endDate/10000;
+		year-=interval/12+1;
+		return year*10000+(12-interval%12)*100+day;
+	}
 }
 
 void GetTick(THANDLE hTdb, const std::string& strCode, bool bWithAB, int nStartDay, int nEndDay, int nStartTime/* =0*/, int nEndTime/* = 0*/)
@@ -221,34 +365,60 @@ void GetTick(THANDLE hTdb, const std::string& strCode, bool bWithAB, int nStartD
 
 }
 
-//计算动量，momCyc为6月或者12月
-//今日收盘价-当日的开盘价 = 一段时间的动量
-//input：数据库：htdb  股票代号：strCode 时间段：momCyc(1~12 月，从今天开始计算时间) 动量（返回值):monentum
-//output: void
-void Momentum(THANDLE hTdb, const std::string& strCode,int momCyc,int& monentum){
-	int nStartDay, nEndDay;
-	nEndDay=getLastTradeDate(hTdb,strCode);
-	nStartDay=nEndDay-10000;//一年的时间
-	TDBDefine_ReqKLine reqK = { "", REFILL_NONE, 0, 0, CYC_MONTH,1,1, nStartDay, nEndDay,0,0 };
-	//TDBDefine_ReqKLine reqK = {"", REFILL_NONE, 0, 0, CYC_DAY, 1, 1, startdate, enddate, 0, 0};
+typedef pair<string,double> PAIR;
+struct CmpByValue {  
+  bool operator()(const PAIR& lhs, const PAIR& rhs) {  
+    return lhs.second > rhs.second;  
+  }  
+};  
+
+bool getOneMomentum(THANDLE hTdb,const string strCode,int startDate,int endDate,double& mom){
+	TDBDefine_ReqKLine reqK = { "", REFILL_NONE, 0, 0, CYC_DAY,1,1, startDate, endDate,0,0 };
+	
 	strncpy(reqK.chCode, strCode.c_str(), sizeof(reqK.chCode));
 	TDBDefine_KLine* pKLine = NULL;
 	int nCount = 0;
 
 	int nRet = TDB_GetKLine(hTdb, &reqK, &pKLine, &nCount);
-
-	Print("---------------------收到%d项K线，错误码:%d -----------------\n", nCount, nRet);
-	for (int i=0; i<nCount; i++) // 只会输出前10个
-	{
-		TDBDefine_KLine& tdbK = *(pKLine+i);
-		cout<<tdbK.nDate<<endl;
-	}
-	int openLast = (pKLine+ 12 - momCyc)->nOpen; //根据6月还是12月 选择开始月份作为开盘价
-	int closeToday = (pKLine+nCount-1)->nClose; //获取最后一个月的收盘价
-	cout<<openLast<<","<<closeToday;
-	monentum = closeToday - openLast;
-	system("pause");
+	if(nCount ==0)
+		return false;
+    TDBDefine_KLine& buyTDB = *(pKLine); 
+	TDBDefine_KLine& saleTDB = *(pKLine + nCount-1);
+	
+	mom = (saleTDB.nClose-buyTDB.nOpen)*1.0/10000;
 	TDB_Free(pKLine);
+	return true;
+}
+//根据动态因子获取各个季度的股票排序列表
+//input：数据库：htdb  时间段：testStartDate(7个季度) 股票列表7*2000（返回值):stockList
+//output: void
+void DynamicData(THANDLE hTdb,const string factor,vector<int> testStartDate,vector<string> stockList,vector<vector<string>>& rankStockList){
+	_mkdir(factor.c_str());   //创建文件夹存储因子
+	ofstream ofs;
+	for(int i=0;i<7;i++){
+		 ofs.open(factor+"/"+ to_string(long long (i+1))+".csv");
+         vector<PAIR> stock_mom_pair;
+		 int startDate=getStarDatetFromInterval(testStartDate[i],6);
+		 for(int j=0;j<stockList.size();j++){
+			  double mom;
+			  //获取该股票n个月的动量  
+		      if(getOneMomentum(hTdb,stockList[j],startDate,testStartDate[i],mom)==false)
+				  continue;
+			  PAIR a(stockList[j],mom);
+			  stock_mom_pair.push_back(a);
+		 }
+		 cout<<"开始排序"<<endl;
+		 sort(stock_mom_pair.begin(), stock_mom_pair.end(), CmpByValue());
+		 cout<<"完成排序"<<endl;
+		 for(auto iter = stock_mom_pair.begin(); iter!=stock_mom_pair.end(); iter++)
+         {  
+              cout<<iter->first<<" : "<<iter->second<<endl;
+			  //substock.push_back(iter->first);
+			  ofs<<iter->first<<","<<iter->second<<endl;
+         }
+		 ofs.close();
+		 //rankStockList.push_back(substock);
+	}
 }
 
 //计算震荡指数
@@ -527,7 +697,10 @@ void TestFormula(THANDLE hTdb)
 
 void LoadIPFromCin(OPEN_SETTINGS& settings)
 {
-
+	strcpy(settings.szIP, "114.80.154.34");
+    strcpy(settings.szPort, "10061");
+    strcpy(settings.szUser, "TD1033863003");
+    strcpy(settings.szPassword, "46005604");
 	/*std::string strLine;
 	printf("Input IP:");
 	std::getline(std::cin, strLine);
